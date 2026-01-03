@@ -1,0 +1,807 @@
+---
+lang: brazil
+output:
+  pdf_document:
+    extra_dependencies: float
+    latex_engine: xelatex
+  html_document:
+    df_print: paged
+  word_document: default
+header-includes:
+- \usepackage{cancel}
+- \usepackage{fancyhdr}
+- \usepackage{pdfpages}
+- \usepackage{pdflscape}
+- \usepackage{booktabs}
+- \pagestyle{fancy}
+- \fancyhf{}
+- \renewcommand{\headrulewidth}{0pt}
+- \fancyfoot[L]{\includegraphics[width=2cm]{logo.png}}
+- \fancyfoot[C]{}
+- \fancyfoot[R]{Página \thepage}
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+\begin{titlepage}
+\centering
+\includegraphics[width=3cm]{logo.png}
+\vfill
+{\Huge Otimização de Roteiros para a Fase de Grupos da Copa do Mundo 2026\par}
+
+\vspace{1cm}
+{\Large Luiz Henrique Barretta Francisco - 202100155302 \par}
+{\Large Philippi Schena dos Reis - 20250080011479 -  \par}
+\vfill
+{\large novembro/2025 \par}
+\end{titlepage}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(slam)
+library(gurobi)
+library(devtools)
+library(dplyr)
+library(knitr)
+library(readxl)
+library(kableExtra)
+library(ggplot2)
+library(maps)
+library(mapproj)
+library(patchwork)
+```
+
+# 1. Introdução
+
+A Copa do Mundo FIFA de 2026 representa um desafio logístico sem
+precedentes. Sendo o primeiro torneio a contar com 48 seleções sediadas
+em 16 cidades por três países, o desgaste das equipes com viagens é um
+fator crítico. Modelos de otimização anteriores por vezes simplificam o
+problema, tratando um "grupo" de quatro times como um bloco único.
+
+Este projeto adota uma abordagem de alta fidelidade, desenvolvendo um
+modelo de Programação Inteira Mista (MIP) que rastreia cada uma das 48
+equipes individualmente ao longo das três rodadas da fase de grupos. O
+modelo irá agendar os 72 jogos da fase de grupos, atribuindo cada um a
+um estádio.
+
+O objetivo é determinar a alocação de estádios para cada jogo de forma a
+minimizar a distância total acumulada percorrida por todas as 48 equipes
+entre suas partidas, garantindo ao mesmo tempo que as regras do torneio
+(como equipes e oponentes jogando no mesmo local) sejam satisfeitas.
+
+# 2. Formulação Matemática
+
+Para resolver este problema, formulamos um modelo de Programação Inteira
+Mista (MIP) que pode ser visto abaixo:
+
+### 2.1. Conjuntos
+
+-   $T$: Conjunto de todas as equipes, $t \in \{1, \dots, 48\}$.
+-   $S$: Conjunto de estádios (cidades-sede), $s \in \{1, \dots, 16\}$.
+-   $M$: Conjunto de rodadas, $m \in \{1, 2, 3\}$.
+-   $D$: Conjunto de dias de jogo dentro de uma rodada,
+    $d \in \{1, 2\}$.
+
+### 2.2 Parâmetros
+
+-   $D_{ij}$: A distância em KM entre o estádio $i \in S$ e o estádio
+    $j \in S$.
+-   $O_{t,m}$: Um parâmetro pré-definido que identifica a equipe
+    oponente da equipe $t$ na rodada $m$. (Por exemplo, se $t=1$ joga
+    com $t=2$ na rodada 1, então $O_{1,1} = 2$ e $O_{2,1} = 1$).
+
+### 2.3. Variáveis de Decisão:
+
+-   $X_{t,m,d,s} \in \{0, 1\}$: Variável binária que assume valor 1 se a
+    equipe $t$ joga sua partida da rodada $m$, no dia $d$, no estádio
+    $s$, e 0 caso contrário.
+-   $Y_{t,m,i,j} \in \{0, 1\}$: Variável auxiliar que assume valor 1 se
+    a equipe $t$ viaja do estádio $i$ (jogo da rodada $m-1$) para o
+    estádio $j$ (jogo da rodada $m$). A viagem ocorre entre as rodadas,
+    independentemente do dia específico em que o jogo ocorreu.
+
+### 2.4. Função Objetivo:
+
+O objetivo é minimizar a distância total percorrida por todas as equipes
+entre todas as rodadas.
+
+$$\text{Minimizar} \sum_{t \in T} \sum_{m \in \{2, 3\}} \sum_{i \in S} \sum_{j \in S} D_{ij} \cdot Y_{t,m,i,j}$$
+
+### 2.5. Restrições
+
+-   
+
+    1.  Atribuição de Jogo da Equipe: Cada equipe $t$ joga exatamente
+        uma vez por rodada $m$ (em um único dia $d$ e em um único
+        estádio $s$).
+
+$$\sum_{d \in D} \sum_{s \in S} X_{t,m,d,s} = 1 \quad \forall t \in T, \forall m \in M$$
+
+-   
+
+    2.  Encontro de Oponentes: Uma equipe $t$ e sua oponente $O_{t,m}$
+        devem jogar no mesmo estádio $s$ e no mesmo dia $d$.
+
+$$X_{t,m,d,s} - X_{O_{t,m},m,d,s} = 0 \quad \forall t \in T, \forall m \in M, \forall d \in D, \forall s \in S$$
+
+-   
+
+    3.  Capacidade Diária do Estádio: Para satisfazer sua regra,
+        definimos que no máximo um jogo (2 equipes) pode ocorrer por
+        estádio $s$, por dia $d$, por rodada $m$.
+
+$$\sum_{t \in T} X_{t,m,d,s} \le 2 \quad \forall m \in M, \forall d \in D, \forall s \in S$$
+
+-   
+
+    4.  Diversidade de Estádios: Uma equipe $t$ não pode jogar no mesmo
+        estádio $s$ mais de uma vez durante a fase de grupos.
+
+$$\sum_{m \in M} \sum_{d \in D} X_{t,m,d,s} \le 1 \quad \forall t \in T, \forall s \in S$$
+
+-   
+
+    5.  Linearização da Viagem: Se uma equipe jogou no estádio $i$ na rodada $m-1$, ela deve "sair" de $i$ para exatamente um estádio $j$ na rodada $m$; e se uma equipe vai jogar no estádio $j$ na rodada $m$, ela deve "chegar" em $j$ vinda de um estádio $i$.
+
+    Seja então $P_{t,m,s} = \sum_{d \in D} X_{t,m,d,s}$ (a variável agregada que indica se a equipe $t$ jogou no estádio $s$ na rodada $m$, em qualquer dia):    
+
+$$
+\sum_{j \in S} Y_{t,m,i,j} = P_{t, m-1, i} \quad \forall t \in T, \forall m \in \{2,3\}, \forall i \in S
+$$
+
+$$
+\sum_{i \in S} Y_{t,m,i,j} = P_{t, m, j} \quad \forall t \in T, \forall m \in \{2,3\}, \forall j \in S
+$$
+
+
+-   
+
+    6.  Demanda Mínima do Estádio (R6): Para garantir que todos os
+        estádios sejam utilizados, exigimos que cada estádio $s$ sedie
+        um total de pelo menos dois jogos (ou seja, 4 equipes) ao longo
+        de todas as rodadas $m$ e dias $d$.
+
+$$\sum_{m \in M} \sum_{d \in D} \sum_{t \in T} X_{t,m,d,s} \ge 4 \quad \forall s \in S$$
+
+# 3. Implementação em R com Gurobi
+
+### 3.1. Carregando os Dados
+
+Primeiro, definimos nossos conjuntos e carregamos a matriz de
+distâncias.
+
+```{r carregamento, echo = FALSE}
+N_G <- 12 # Número de Grupos
+N_M <- 3  # Número de Rodadas
+N_S <- 16 # Número de Estádios
+
+file_name <- "distancias.xlsx" 
+# 1. Carrega a planilha do Excel em um dataframe
+df_distancias <- read_excel(file_name)
+# 2. Extrai os nomes dos estádios
+stadiums <- colnames(df_distancias)[-1]
+# 3. Define o número de estádios
+N_S <- length(stadiums)
+
+# 4. Converte o dataframe em uma matriz puramente numérica
+dist_matrix <- as.matrix(df_distancias[, -1])
+
+# 5. Atribui os nomes dos estádios às linhas e colunas da matriz
+rownames(dist_matrix) <- stadiums
+colnames(dist_matrix) <- stadiums
+
+# Verificação (Opcional, mas recomendado)
+cat(paste("Número de estádios (N_S):", N_S, ""))
+print(stadiums)
+```
+
+A primeira etapa do carregamento de dados confirma o escopo do problema,
+definindo o número total de estádios, $N_S$, como 16. Essa contagem
+reflete a natureza multinacional inédita do torneio de 2026, com as
+cidades-sede distribuídas geograficamente por três países: Estados
+Unidos, Canadá e México. A lista de estádios impressa logo em seguida,
+indo de "Atlanta" a "Monterrey", detalha essas 16 localidades que formam
+os "nós" da nossa rede de otimização.
+
+```{r matrix_d, echo = FALSE, results = 'asis'}
+# 3. DIVIDIR A MATRIZ
+# Parte 1: Primeiras 8 linhas (Atlanta a New York)
+matrix_pt1 <- dist_matrix[,1:8 ]
+# Parte 2: Últimas 8 linhas (Filadélfia a Monterrey)
+matrix_pt2 <- dist_matrix[,9:16 ]
+
+# 4. IMPRIMIR A TABELA 1
+kable(matrix_pt1, 
+      format = "latex", 
+      booktabs = TRUE,
+      caption = "Matriz de Distâncias (Parte 1: Atlanta a New York)",
+      longtable = TRUE
+      ) %>%
+  kable_styling(
+    latex_options = c("HOLD_position", "scale_down"),
+    font_size = 8 # Usar o mesmo tamanho de fonte para consistência
+  )
+# 5. IMPRIMIR A TABELA 2
+kable(matrix_pt2, 
+      format = "latex", 
+      booktabs = TRUE,
+      caption = "Matriz de Distâncias (Parte 2: Filadélfia a Monterrey)",
+      longtable = TRUE
+      ) %>%
+  kable_styling(
+    latex_options = c("HOLD_position", "scale_down"),
+    font_size = 8 # Usar o mesmo tamanho de fonte para consistência
+  )
+```
+
+As Tabelas 1 e 2 apresentam a matriz de distâncias $D_{ij}$, que, devido
+ao seu tamanho (16x16), foi dividida em duas para facilitar a
+visualização. Esta matriz simétrica é o parâmetro fundamental do nosso
+modelo, quantificando o custo de deslocamento (em quilômetros) entre
+qualquer par de cidades-sede. Será com base nesses valores que a função
+objetivo irá calcular a distância total percorrida pelas seleções, e é
+essa matriz que o solver *Gurobi* utilizará para encontrar a combinação
+de jogos que minimiza esse custo.
+
+### 3.2. Construção do Modelo (*Gurobi* Nativo)
+
+A interface nativa do Gurobi em R requer que o modelo seja construído de
+forma explícita. Essa abordagem envolve definir a função objetivo como
+um vetor numérico de custos *(model_obj)* e construir manualmente a
+matriz de restrições *(model_A)*, que define a relação entre todas as
+variáveis e cada restrição. Embora esse método seja mais detalhado e
+exija o mapeamento manual das nossas variáveis (como $X_{g,m,s}$) para
+um vetor único, ele oferece controle total e é a forma mais direta e de
+alta performance para o R se comunicar com o solver Gurobi.
+
+```{r modelo_e_solver_gurobi_final, echo = FALSE}
+# --- 0. Definição de Constantes (Novo) ---
+N_G <- 12 # Número de Grupos
+N_M <- 3  # Número de Rodadas
+N_T_PER_GROUP <- 4
+N_T <- N_G * N_T_PER_GROUP # 48 Equipes
+N_D <- 2  # NOVO: 2 Dias por rodada
+# N_S e dist_matrix já foram carregados do Excel
+
+# --- 1. Pré-Computação do Oponente (O_tm) ---
+# (Sem alteração)
+cat("Criando matriz de oponentes...")
+opponent_matrix <- matrix(0, nrow = N_T, ncol = N_M)
+for (g in 0:(N_G - 1)) {
+  t1 <- g * N_T_PER_GROUP + 1; t2 <- g * N_T_PER_GROUP + 2
+  t3 <- g * N_T_PER_GROUP + 3; t4 <- g * N_T_PER_GROUP + 4
+  opponent_matrix[t1, 1] <- t2; opponent_matrix[t2, 1] <- t1
+  opponent_matrix[t3, 1] <- t4; opponent_matrix[t4, 1] <- t3
+  opponent_matrix[t1, 2] <- t3; opponent_matrix[t3, 2] <- t1
+  opponent_matrix[t2, 2] <- t4; opponent_matrix[t4, 2] <- t2
+  opponent_matrix[t1, 3] <- t4; opponent_matrix[t4, 3] <- t1
+  opponent_matrix[t2, 3] <- t3; opponent_matrix[t3, 3] <- t2
+}
+
+# --- 2. Mapeamento de Variáveis (Atualizado) ---
+n_vars_X <- N_T * N_M * N_D * N_S # 48 * 3 * 2 * 16
+n_vars_Y <- N_T * (N_M - 1) * N_S * N_S # 48 * 2 * 16 * 16
+n_vars_total <- n_vars_X + n_vars_Y
+
+# Funções de índice atualizadas para 'd' (dia)
+idx_X <- function(t, m, d, s) { 
+  (t - 1) * N_M * N_D * N_S + (m - 1) * N_D * N_S + (d - 1) * N_S + s 
+}
+idx_Y <- function(t, m, i, j) { 
+  n_vars_X + (t - 1) * (N_M - 1) * N_S * N_S + (m - 2) * N_S * N_S + (i - 1) * N_S + j 
+}
+
+# --- 3. Inicializar Modelo Gurobi ---
+model <- list()
+model$modelsense <- 'min'
+model$vtype <- rep('B', n_vars_total)
+
+# --- 4. Função Objetivo ---
+# (Sem alteração, 'idx_Y' ainda funciona)
+model$obj <- numeric(n_vars_total)
+for (t in 1:N_T) {
+  for (m in 2:N_M) {
+    for (i in 1:N_S) {
+      for (j in 1:N_S) {
+        model$obj[idx_Y(t, m, i, j)] <- dist_matrix[i, j]
+      }
+    }
+  }
+}
+
+# --- 5. Restrições ---
+A_rows <- list()
+rhs <- c()
+sense <- c()
+row_idx <- 1
+
+# R1: Atribuição de Jogo (sum_d,s(X_tmds) = 1)
+cat("Construindo R1 (Atribuição de Equipe)...")
+for (t in 1:N_T) {
+  for (m in 1:N_M) {
+    indices <- sapply(1:N_D, function(d) {
+      sapply(1:N_S, function(s) idx_X(t, m, d, s))
+    })
+    A_rows[[row_idx]] <- list(indices = indices, values = rep(1, N_D * N_S))
+    rhs <- c(rhs, 1)
+    sense <- c(sense, '=')
+    row_idx <- row_idx + 1
+  }
+}
+
+# R2: Encontro de Oponentes (X_tmds - X_omds = 0)
+cat("Construindo R2 (Encontro de Oponentes)...")
+for (t in 1:N_T) {
+  for (m in 1:N_M) {
+    o <- opponent_matrix[t, m]
+    if (t < o) { 
+      for (d in 1:N_D) { # Loop de dia adicionado
+        for (s in 1:N_S) {
+          indices <- c(idx_X(t, m, d, s), idx_X(o, m, d, s))
+          A_rows[[row_idx]] <- list(indices = indices, values = c(1, -1))
+          rhs <- c(rhs, 0)
+          sense <- c(sense, '=')
+          row_idx <- row_idx + 1
+        }
+      }
+    }
+  }
+}
+
+# R3: Capacidade Diária do Estádio (sum_t(X_tmds) <= 2)
+cat("Construindo R3 (Capacidade Diária)...")
+for (m in 1:N_M) {
+  for (d in 1:N_D) {
+    for (s in 1:N_S) {
+      indices <- sapply(1:N_T, function(t) idx_X(t, m, d, s))
+      A_rows[[row_idx]] <- list(indices = indices, values = rep(1, N_T))
+      rhs <- c(rhs, 2) # Permite no máx. 1 jogo (2 equipes)
+      sense <- c(sense, '<=')
+      row_idx <- row_idx + 1
+    }
+  }
+}
+
+# R4: Diversidade de Estádios (sum_m,d(X_tms) <= 1)
+cat("Construindo R4 (Diversidade de Estádios)...")
+for (t in 1:N_T) {
+  for (s in 1:N_S) {
+    indices <- sapply(1:N_M, function(m) {
+      sapply(1:N_D, function(d) idx_X(t, m, d, s))
+    })
+    A_rows[[row_idx]] <- list(indices = indices, values = rep(1, N_M * N_D))
+    rhs <- c(rhs, 1)
+    sense <- c(sense, '<=')
+    row_idx <- row_idx + 1
+  }
+}
+
+# R5: Linearização da Viagem (Formulação de Fluxo - FORTE)
+cat("Construindo R5 (Linearização da Viagem - Fluxo Forte)...")
+
+# Loop principal por time (t) e rodada (m)
+for (t in 1:N_T) {
+  for (m in 2:N_M) {
+    
+    # ---
+    # Nova R5.1: Restrição de SAÍDA
+    # sum(j) Y(t,m,i,j) = P(t,m-1,i)   [para cada i]
+    # Ou seja: sum(j) Y(t,m,i,j) - sum(d) X(t,m-1,d,i) = 0
+    # ---
+    for (i in 1:N_S) {
+      # Parte 1 (LHS): sum(j) Y(t,m,i,j)
+      # Pega os índices de todas as viagens SAINDO de 'i'
+      indices_Y_saindo <- sapply(1:N_S, function(j) idx_Y(t, m, i, j))
+      
+      # Parte 2 (RHS): P(t,m-1,i) = sum(d) X(t,m-1,d,i)
+      # Pega os índices de P(m-1, i)
+      indices_P_i <- sapply(1:N_D, function(d) idx_X(t, m - 1, d, i))
+      
+      # Junta os índices (Y e X)
+      indices <- c(indices_Y_saindo, indices_P_i)
+      # Junta os valores (coeficientes 1 para cada Y, -1 para cada X)
+      valores <- c(rep(1, N_S), rep(-1, N_D))
+      
+      # Adiciona a restrição (LHS - RHS = 0)
+      A_rows[[row_idx]] <- list(indices = indices, values = valores)
+      rhs <- c(rhs, 0)
+      sense <- c(sense, '=') # É uma igualdade!
+      row_idx <- row_idx + 1
+    }
+    
+    # ---
+    # Nova R5.2: Restrição de CHEGADA
+    # sum(i) Y(t,m,i,j) = P(t,m,j)   [para cada j]
+    # Ou seja: sum(i) Y(t,m,i,j) - sum(d) X(t,m,d,j) = 0
+    # ---
+    for (j in 1:N_S) {
+      # Parte 1 (LHS): sum(i) Y(t,m,i,j)
+      # Pega os índices de todas as viagens CHEGANDO em 'j'
+      indices_Y_chegando <- sapply(1:N_S, function(i) idx_Y(t, m, i, j))
+      
+      # Parte 2 (RHS): P(t,m,j) = sum(d) X(t,m,d,j)
+      # Pega os índices de P(m, j)
+      indices_P_j <- sapply(1:N_D, function(d) idx_X(t, m, d, j))
+      
+      # Junta os índices (Y e X)
+      indices <- c(indices_Y_chegando, indices_P_j)
+      # Junta os valores (coeficientes 1 para cada Y, -1 para cada X)
+      valores <- c(rep(1, N_S), rep(-1, N_D))
+      
+      # Adiciona a restrição (LHS - RHS = 0)
+      A_rows[[row_idx]] <- list(indices = indices, values = valores)
+      rhs <- c(rhs, 0)
+      sense <- c(sense, '=') # É uma igualdade!
+      row_idx <- row_idx + 1
+    }
+    
+  } # fim loop m
+} # fim loop t
+
+cat(" OK!\n") # Adicionei um "OK!" para feedback
+
+# R6: Demanda Mínima do Estádio (>= 2 jogos = 4 equipes)
+cat("Construindo R6 (Demanda Mínima do Estádio)...\n")
+for (s in 1:N_S) {
+  
+  # Pega os índices de X para este estádio 's' em TODAS as rodadas, dias e equipes
+  indices <- sapply(1:N_T, function(t) {
+    sapply(1:N_M, function(m) {
+      sapply(1:N_D, function(d) {
+        idx_X(t, m, d, s)
+      })
+    })
+  })
+  
+  # A soma total de equipes neste estádio deve ser >= 4
+  A_rows[[row_idx]] <- list(indices = indices, values = rep(1, N_T * N_M * N_D))
+  rhs <- c(rhs, 4)
+  sense <- c(sense, '>=')
+  row_idx <- row_idx + 1
+}
+
+# --- 6. Montar Matriz A e Resolver ---
+cat("Montando a matriz A esparsa...")
+n_rows <- length(rhs)
+i_vec <- unlist(lapply(1:n_rows, function(r) rep(r, length(A_rows[[r]]$indices))))
+j_vec <- unlist(lapply(1:n_rows, function(r) A_rows[[r]]$indices))
+v_vec <- unlist(lapply(1:n_rows, function(r) A_rows[[r]]$values))
+
+model$A <- slam::simple_triplet_matrix(i = i_vec, j = j_vec, v = v_vec,
+                                       nrow = n_rows, ncol = n_vars_total)
+model$rhs <- rhs
+model$sense <- sense
+
+cat("Iniciando otimização")
+# Parâmetros para a solução real (silencioso e com tempo limite)
+params <- list(TimeLimit = 3600, OutputFlag = 1, DisplayInterval = 3600) 
+# Esta é a chamada que REALMENTE salva a solução que usaremos
+resultado_gurobi <- gurobi(model, params)
+
+cat("Otimização concluída!")
+```
+
+O log de saída do Gurobi demonstra a eficiência da formulação, pois o modelo original possui `r format(n_rows, big.mark = ".")` restrições (linhas) e `r format(n_vars_total, big.mark = ".")` variáveis (colunas), com `r format(length(v_vec), big.mark = ".")` coeficientes não-zero (nonzeros).
+
+O passo de "Presolve" do Gurobi foi capaz de simplificar o problema (conforme visto no log). O solver atingiu o limite de tempo estipulado de `r params$TimeLimit` segundos.
+
+Durante esse período, ele encontrou `r resultado_gurobi$solcount` soluções viáveis (Solution count), sendo a melhor delas (Incumbent) uma distância total de `r format(round(resultado_gurobi$objval, 0), big.mark = ".")` KM.
+
+O "gap" de apenas `r format(round(resultado_gurobi$mipgap * 100, 2), decimal.mark = ",")`% indica que a solução viável encontrada é de altíssima qualidade e quase ótima. Ela está muito próxima do limite inferior teórico (Best Bound de `r format(round(resultado_gurobi$objbound, 0), big.mark = ".")` KM)
+
+
+```{r resultados_gurobi_final_dividido, echo = FALSE, results = 'asis'}
+# O objeto 'resultado_gurobi' foi criado no chunk anterior
+
+if (resultado_gurobi$status == "OPTIMAL" || resultado_gurobi$status == "TIME_LIMIT") {
+  
+  if(resultado_gurobi$status == "OPTIMAL") {
+    cat(paste("Solução ótima encontrada! Status:", resultado_gurobi$status, "n"))
+  } else {
+    cat(paste("Solução viável encontrada (limite de tempo atingido). Status:", resultado_gurobi$status, ""))
+  }
+  
+  cat(paste("\n\nDistância Total Mínima (Todas as Equipes):", round(resultado_gurobi$objval, 2), "KM"))
+  
+  # Extrair o vetor de solução
+  solution_vec <- resultado_gurobi$x
+  
+  # --- Reconstruir a tabela 'solucao_x' (agora com 'Dia') ---
+  sol_list <- list()
+  for (t in 1:N_T) {
+    for (m in 1:N_M) {
+      for (d in 1:N_D) {
+        for (s in 1:N_S) {
+          var_idx <- idx_X(t, m, d, s)
+          if (solution_vec[var_idx] > 0.9) {
+            sol_list[[length(sol_list) + 1]] <- data.frame(
+              Equipe = t,
+              Grupo = floor((t - 1) / N_T_PER_GROUP) + 1,
+              Rodada = m,
+              Dia = d, # <-- Nova coluna
+              Estadio_Idx = s,
+              Cidade = stadiums[s]
+            )
+          }
+        }
+      }
+    }
+  }
+
+  solucao_x <- bind_rows(sol_list) %>%
+    arrange(Equipe, Rodada)
+
+  # --- Tabela 1: Agenda de Jogos (Dia e Cidade) ---
+  agenda_por_equipe <- solucao_x %>%
+    group_by(Equipe) %>%
+    summarise(
+      Grupo = first(Grupo),
+      R1_Cidade = Cidade[Rodada == 1],
+      R1_Dia = Dia[Rodada == 1],
+      R2_Cidade = Cidade[Rodada == 2],
+      R2_Dia = Dia[Rodada == 2],
+      R3_Cidade = Cidade[Rodada == 3],
+      R3_Dia = Dia[Rodada == 3]
+    ) %>%
+    arrange(Grupo, Equipe)
+
+  print(kable(agenda_por_equipe, 
+        format = "latex", 
+        booktabs = TRUE,
+        caption = "Agenda de Jogos por Equipe (Cidade e Dia)",
+        digits = 0))
+
+  # --- Tabela 2: Distâncias de Viagem ---
+
+  distancia_por_equipe <- agenda_por_equipe %>%
+    group_by(Equipe) %>%
+    summarise(
+      Grupo = first(Grupo),
+      Dist_Viagem_1 = dist_matrix[R1_Cidade, R2_Cidade],
+      Dist_Viagem_2 = dist_matrix[R2_Cidade, R3_Cidade],
+      Dist_Total_Equipe = Dist_Viagem_1 + Dist_Viagem_2
+    ) %>%
+    arrange(Grupo, Equipe)
+
+  print(kable(distancia_por_equipe, 
+        format = "latex", 
+        booktabs = TRUE,
+        caption = "Distâncias de Viagem por Equipe (KM)",
+        digits = 0))
+  
+  # --- Variáveis de Exemplo para o Texto ---
+# Vamos puxar os dados do Grupo 1 para usar no parágrafo de exemplo.
+# Usamos 'slice(1)' pois todos no grupo têm a mesma rota.
+g1_agenda <- agenda_por_equipe %>% filter(Grupo == 1) %>% slice(1)
+g1_dist <- distancia_por_equipe %>% filter(Grupo == 1) %>% slice(1)
+
+# Salva as variáveis de texto para usar 'inline'
+ex_r1_cidade <- g1_agenda$R1_Cidade
+ex_r2_cidade <- g1_agenda$R2_Cidade
+ex_r3_cidade <- g1_agenda$R3_Cidade
+ex_dist_1_2 <- g1_dist$Dist_Viagem_1
+ex_dist_2_3 <- g1_dist$Dist_Viagem_2
+ex_dist_total <- g1_dist$Dist_Total_Equipe
+
+} else {
+  cat(paste("Não foi possível encontrar uma solução. Status:", resultado_gurobi$status))
+}
+```
+
+A Tabela 3 ("Agenda de Jogos") demonstra que todas as restrições logísticas complexas foram atendidas com sucesso. Por exemplo, no Grupo 1 (Equipes 1-4), os oponentes (1 e 2; 3 e 4) foram alocados para o mesmo estádio e dia na Rodada 1, mas em dias diferentes (Dia 1 e Dia 2) para respeitar a capacidade do estádio (Restrição R3).
+
+O insight mais importante vem da Tabela 4 ("Distâncias de Viagem"): o modelo determinou que a rota ideal envolve todas as 4 equipes de um mesmo grupo seguindo exatamente o mesmo itinerário de viagem. Por exemplo, todas as equipes do Grupo 1 viajam de `r ex_r1_cidade` para `r ex_r2_cidade` (`r ex_dist_1_2`km) e de `r ex_r2_cidade` para `r ex_r3_cidade` (`r ex_dist_2_3`km), resultando em uma distância total idêntica de `r ex_dist_total` km para cada equipe daquele grupo.
+
+```{r mapa_rotas_por_equipe, echo=FALSE, warning=FALSE, message=FALSE, fig.width=10, fig.height=8}
+
+# --- 1. Coordenadas das Cidades-Sede ---
+# (Permanece o mesmo)
+city_coords <- data.frame(
+  Cidade = c("Atlanta", "Boston", "Dallas", "Houston", "Kansas City", 
+             "Los Angeles", "Miami", "Nova York", "Filadélfia", 
+             "São F. Bay Area", "Seattle", "Toronto", "Vancouver", 
+             "Guadalajara", "Cid. do México", "Monterrey"),
+  lat = c(33.74, 42.36, 32.77, 29.76, 39.09, 34.05, 25.76, 40.71, 39.95, 
+          37.77, 47.60, 43.65, 49.28, 20.65, 19.43, 25.68),
+  lon = c(-84.38, -71.05, -96.79, -95.36, -94.57, -118.24, -80.19, -74.00, -75.16, 
+          -122.41, -122.33, -79.38, -123.12, -103.34, -99.13, -100.31)
+)
+
+# --- 2. Preparar os Dados para o Mapa (COM AS MUDANÇAS) ---
+
+# Primeiro, pegue a agenda e adicione as coordenadas (como antes)
+agenda_coords_base <- agenda_por_equipe %>%
+  left_join(city_coords, by = c("R1_Cidade" = "Cidade")) %>%
+  rename(R1_lon = lon, R1_lat = lat) %>%
+  left_join(city_coords, by = c("R2_Cidade" = "Cidade")) %>%
+  rename(R2_lon = lon, R2_lat = lat) %>%
+  left_join(city_coords, by = c("R3_Cidade" = "Cidade")) %>%
+  rename(R3_lon = lon, R3_lat = lat)
+
+# Agora, crie os grupos de trajetos
+trajeto_grupos <- agenda_coords_base %>%
+  # 1. Criar uma ID única para cada trajeto (ex: "Toronto-Boston-Atlanta")
+  mutate(Trajeto_ID = paste(R1_Cidade, R2_Cidade, R3_Cidade, sep = " -> ")) %>%
+  
+  # 2. Agrupar por essa ID de trajeto
+  group_by(Trajeto_ID) %>%
+  
+  # 3. Criar a etiqueta da legenda (ex: "1 - 3 - 4")
+  summarise(
+    Equipes_Agrupadas = paste(sort(unique(Equipe)), collapse = " - ")
+  )
+
+# Juntar os dados: agora cada linha de 'agenda_coords' 
+# tem a etiqueta 'Equipes_Agrupadas'
+agenda_coords_final <- agenda_coords_base %>%
+  mutate(Trajeto_ID = paste(R1_Cidade, R2_Cidade, R3_Cidade, sep = " -> ")) %>%
+  left_join(trajeto_grupos, by = "Trajeto_ID")
+
+
+# --- 3. Carregar o Mapa Base ---
+# (Permanece o mesmo)
+world_map <- map_data("world")
+na_map <- world_map %>%
+  filter(region %in% c("USA", "Canada", "Mexico"))
+
+# --- 4. Plotar o Gráfico (COM A CORREÇÃO) ---
+
+ggplot() +
+  # Camada 1: O mapa base
+  geom_polygon(data = na_map, aes(x = long, y = lat, group = group), 
+               fill = "gray90", color = "white", linewidth = 0.5) +
+  
+  # Camada 2: Trajetos da Rodada 1 -> Rodada 2
+  geom_segment(data = agenda_coords_final,
+               aes(x = R1_lon, y = R1_lat, xend = R2_lon, yend = R2_lat,
+                   color = factor(Equipes_Agrupadas)), # <-- MUDANÇA AQUI
+               alpha = 0.7, linewidth = 0.7) + 
+  
+  # Camada 3: Trajetos da Rodada 2 -> Rodada 3
+  geom_segment(data = agenda_coords_final,
+               aes(x = R2_lon, y = R2_lat, xend = R3_lon, yend = R3_lat,
+                   color = factor(Equipes_Agrupadas)), # <-- MUDANÇA AQUI
+               alpha = 0.7, linewidth = 0.7) +
+  
+  # Camada 4: Pontos das Cidades-Sede
+  geom_point(data = city_coords, aes(x = lon, y = lat), 
+             color = "black", fill = "red", shape = 21, size = 2.5) +
+  
+  # Camada 5: Legenda (agora agrupada)
+  guides(color = guide_legend(
+    title = "Trajetos (Equipes)", # <-- MUDANÇA AQUI
+    ncol = 2, 
+    keywidth = 0.5, 
+    keyheight = 0.5,
+    title.position = "top"
+  )) +
+  
+  # Camada 6: Coordenadas e Tema
+  coord_map(projection = "mercator", 
+            xlim = c(-125, -65), 
+            ylim = c(18, 50)) +
+  theme_void() + 
+  labs(
+    title = "Rotas de Viagem Otimizadas (Agrupadas por Trajeto)", # <-- MUDANÇA AQUI
+    subtitle = "Trajetos entre as rodadas 1-2 e 2-3 para as 48 equipes",
+    caption = "Equipes que compartilham a mesma rota exata têm a mesma cor." # <-- MUDANÇA AQUI
+  ) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    legend.position = "right",
+    legend.text = element_text(size = 6), # Fonte pequena ainda é necessária
+    legend.title = element_text(face = "bold")
+  )
+```
+
+```{r mapa_rotas_facetado, echo=FALSE, warning=FALSE, message=FALSE, fig.width=14, fig.height=10}
+# --- 2. Preparar os Dados para o Mapa (COM AGRUPAMENTO DE ROTAS) ---
+# (agenda_por_equipe foi criado no chunk anterior)
+
+# 2a. Adicionar coordenadas (como antes)
+agenda_coords_base <- agenda_por_equipe %>%
+  left_join(city_coords, by = c("R1_Cidade" = "Cidade")) %>%
+  rename(R1_lon = lon, R1_lat = lat) %>%
+  left_join(city_coords, by = c("R2_Cidade" = "Cidade")) %>%
+  rename(R2_lon = lon, R2_lat = lat) %>%
+  left_join(city_coords, by = c("R3_Cidade" = "Cidade")) %>%
+  rename(R3_lon = lon, R3_lat = lat)
+
+# 2b. Criar os grupos de trajetos (ex: "Toronto -> Boston -> Atlanta")
+trajeto_grupos <- agenda_coords_base %>%
+  mutate(Trajeto_ID = paste(R1_Cidade, R2_Cidade, R3_Cidade, sep = " -> ")) %>%
+  group_by(Trajeto_ID) %>%
+  # Criar a etiqueta da legenda (ex: "Equipes 1 - 4 - 5")
+  summarise(
+    Equipes_Agrupadas = paste("Equipes", paste(sort(unique(Equipe)), collapse = " - "))
+  )
+
+# 2c. Juntar tudo. 
+# 'agenda_coords' agora tem a coluna 'Equipes_Agrupadas' para a legenda
+agenda_coords <- agenda_coords_base %>%
+  mutate(Trajeto_ID = paste(R1_Cidade, R2_Cidade, R3_Cidade, sep = " -> ")) %>%
+  left_join(trajeto_grupos, by = "Trajeto_ID")
+
+
+# --- 3. Função para Criar UM Mapa com Zoom ---
+create_group_map <- function(grupo_num) {
+  
+  group_routes <- agenda_coords %>% filter(Grupo == grupo_num)
+  
+  cities_in_group <- c(group_routes$R1_Cidade, 
+                       group_routes$R2_Cidade, 
+                       group_routes$R3_Cidade) %>% unique()
+  
+  cities_to_plot <- city_coords %>% filter(Cidade %in% cities_in_group)
+  
+  # Calcula o Bounding Box (zoom) com uma margem de 5 graus
+  lon_min <- min(cities_to_plot$lon) - 5
+  lon_max <- max(cities_to_plot$lon) + 5
+  lat_min <- min(cities_to_plot$lat) - 5
+  lat_max <- max(cities_to_plot$lat) + 5
+  
+  # Cria o ggplot para este grupo
+  p <- ggplot() +
+    geom_polygon(data = na_map, aes(x = long, y = lat, group = group), 
+                 fill = "gray90", color = "white", linewidth = 0.5) +
+    
+    # --- MUDANÇA AQUI ---
+    # Cor agora é baseada nas Equipes_Agrupadas
+    geom_segment(data = group_routes,
+                 aes(x = R1_lon, y = R1_lat, xend = R2_lon, yend = R2_lat,
+                     color = Equipes_Agrupadas), alpha = 0.8, linewidth = 0.8) +
+    geom_segment(data = group_routes,
+                 aes(x = R2_lon, y = R2_lat, xend = R3_lon, yend = R3_lat,
+                     color = Equipes_Agrupadas), alpha = 0.8, linewidth = 0.8) +
+    
+    geom_point(data = cities_to_plot, aes(x = lon, y = lat), 
+               color = "black", fill = "red", shape = 21, size = 1.5) +
+    geom_text(data = cities_to_plot, aes(x = lon, y = lat, label = Cidade),
+              size = 2.5, color = "black", nudge_y = 1.2, check_overlap = TRUE) +
+    
+    coord_cartesian(xlim = c(lon_min, lon_max), ylim = c(lat_min, lat_max)) +
+    
+    labs(title = paste("Grupo", LETTERS[grupo_num])) +
+    theme_void() +
+    theme(
+      plot.title = element_text(size = 12, face = "bold"),
+      legend.position = "none" # Remove legendas individuais
+    )
+  
+  return(p)
+}
+
+# --- 4. Criar a lista de 12 plots ---
+plot_list <- lapply(1:12, create_group_map)
+
+# --- 5. "Costurar" os plots com Patchwork ---
+# (Títulos e legenda atualizados)
+(wrap_plots(plot_list) + 
+   plot_layout(ncol = 4, guides = "collect") + 
+   plot_annotation(
+     title = "Rotas de Viagem Otimizadas (Agrupadas por Trajeto)",
+     subtitle = "Trajetos entre as rodadas 1-2 e 2-3 para as 48 equipes",
+     caption = "Cada mapa tem zoom individual. Cores idênticas (mesmo entre grupos) indicam o mesmo trajeto.",
+     theme = theme(plot.title = element_text(size = 20, face = "bold"),
+                   plot.subtitle = element_text(size = 14),
+                   plot.caption = element_text(size = 10))
+   )
+) & 
+  # MUDANÇA AQUI: Remove 'scale_color_brewer' e usa a escala padrão
+  scale_color_discrete(name = "Trajeto (Equipes)") &
+  theme(legend.position = "right",
+        legend.text = element_text(size = 6), # Fonte pequena para a legenda
+        legend.title = element_text(face = "bold"))
+```
+
+Os mapas facetados com zoom individual confirmam visualmente
+a estratégia de otimização descoberta pelo modelo. Em vez de um único
+gráfico poluído, a divisão em 12 mapas (um por grupo) ilustra a
+principal tática do solver para minimizar a distância: a criação de
+"clusters" regionais. Grupos como A, G e J foram confinados ao "cluster"
+México/Texas; Grupos C, D e F à Costa Oeste ; e Grupos E, H e K à Costa
+Leste. Essa abordagem minimiza a distância total ao evitar drasticamente
+as custosas viagens transcontinentais durante a fase de grupos.
